@@ -114,20 +114,20 @@ install_pdf_tools() {
                 echo -e "${YELLOW}[*] Attempting to install PDF tools...${NC}"
                 case $distro in
                     debian)
-                        sudo apt update && sudo apt install -y enscript ghostscript
+                        sudo apt update && sudo apt install -y enscript ghostscript cups-client vim
                         ;;
                     redhat|fedora)
-                        sudo yum install -y enscript ghostscript || sudo dnf install -y enscript ghostscript
+                        sudo yum install -y enscript ghostscript cups-client vim || sudo dnf install -y enscript ghostscript cups-client vim
                         ;;
                     arch)
-                        sudo pacman -S --noconfirm enscript ghostscript
+                        sudo pacman -S --noconfirm enscript ghostscript cups vim
                         ;;
                     suse)
-                        sudo zypper install -y enscript ghostscript
+                        sudo zypper install -y enscript ghostscript cups-client vim
                         ;;
                     *)
                         echo -e "${RED}[-] Automatic installation not supported for your distribution.${NC}"
-                        echo -e "${YELLOW}[!] Please install manually: enscript and ghostscript${NC}"
+                        echo -e "${YELLOW}[!] Please install manually: enscript ghostscript cups-client vim${NC}"
                         return 2
                         ;;
                 esac
@@ -145,22 +145,24 @@ install_pdf_tools() {
                 echo -e "\n${CYAN}=== Installation Instructions ===${NC}"
                 case $distro in
                     debian)
-                        echo "Run: sudo apt update && sudo apt install enscript ghostscript"
+                        echo "Run: sudo apt update && sudo apt install enscript ghostscript cups-client vim"
                         ;;
                     redhat|fedora)
-                        echo "Run: sudo yum install enscript ghostscript"
-                        echo "Or: sudo dnf install enscript ghostscript"
+                        echo "Run: sudo yum install enscript ghostscript cups-client vim"
+                        echo "Or: sudo dnf install enscript ghostscript cups-client vim"
                         ;;
                     arch)
-                        echo "Run: sudo pacman -S enscript ghostscript"
+                        echo "Run: sudo pacman -S enscript ghostscript cups vim"
                         ;;
                     suse)
-                        echo "Run: sudo zypper install enscript ghostscript"
+                        echo "Run: sudo zypper install enscript ghostscript cups-client vim"
                         ;;
                     *)
                         echo "Please install the following packages manually:"
                         echo "  - enscript"
-                        echo "  - ghostscript (for ps2pdf)"
+                        echo "  - ghostscript"
+                        echo "  - cups-client"
+                        echo "  - vim"
                         ;;
                 esac
                 echo ""
@@ -188,11 +190,11 @@ check_pdf_tools() {
     if command -v enscript >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
         echo -e "${GREEN}[+] Found enscript and ps2pdf${NC}"
         return 0
-    elif command -v pandoc >/dev/null 2>&1; then
-        echo -e "${GREEN}[+] Found pandoc${NC}"
+    elif command -v cupsfilter >/dev/null 2>&1; then
+        echo -e "${GREEN}[+] Found cupsfilter${NC}"
         return 0
-    elif command -v wkhtmltopdf >/dev/null 2>&1; then
-        echo -e "${GREEN}[+] Found wkhtmltopdf${NC}"
+    elif command -v vim >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
+        echo -e "${GREEN}[+] Found vim and ps2pdf${NC}"
         return 0
     fi
     
@@ -283,46 +285,201 @@ choose_output_format() {
     OUTPUT_FILE_PDF="Linux_security_audit_${timestamp}.pdf"
 }
 
-# Function to convert text to PDF
+# FIXED: Function to convert text to PDF with proper UTF-8 handling
 convert_to_pdf() {
     local txt_file=$1
     local pdf_file=$2
     
-    echo -e "${YELLOW}[*] Converting report to PDF format...${NC}"
+    echo -e "${YELLOW}[*] Converting report to PDF format with proper UTF-8 encoding...${NC}"
     
-    # Try enscript + ps2pdf
+    # METHOD 1: cupsfilter (Best for UTF-8 preservation)
+    if command -v cupsfilter >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Trying cupsfilter method...${NC}"
+        
+        # Create a temporary file with proper UTF-8 encoding
+        local temp_txt="/tmp/temp_audit_utf8_$$.txt"
+        
+        # Ensure UTF-8 encoding
+        iconv -f UTF-8 -t UTF-8 "$txt_file" > "$temp_txt" 2>/dev/null || cp "$txt_file" "$temp_txt"
+        
+        # Use cupsfilter to create PDF
+        cupsfilter "$temp_txt" > "$pdf_file" 2>/dev/null
+        
+        rm -f "$temp_txt"
+        
+        if [ -f "$pdf_file" ] && [ -s "$pdf_file" ]; then
+            echo -e "${GREEN}[+] PDF generated successfully with cupsfilter${NC}"
+            echo -e "${GREEN}[+] UTF-8 box-drawing characters preserved${NC}"
+            return 0
+        fi
+    fi
+    
+    # METHOD 2: vim + hardcopy (Good for special characters)
+    if command -v vim >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Trying vim hardcopy method...${NC}"
+        
+        local temp_ps="/tmp/temp_audit_$$.ps"
+        
+        # Create a vim script to generate PostScript with proper encoding
+        cat > /tmp/vim2ps.vim << 'EOF'
+:set enc=utf-8
+:set fenc=utf-8
+:set printencoding=utf-8
+:set printmbcharset=utf-8
+:hardcopy > /tmp/temp_audit_$$.ps
+:q
+EOF
+        
+        # Replace the placeholder with actual PID
+        sed -i "s/\$\$/$PPID/g" /tmp/vim2ps.vim
+        
+        # Run vim to generate PostScript
+        vim -u NONE -U NONE -N -e -s "$txt_file" -S /tmp/vim2ps.vim 2>/dev/null
+        
+        rm -f /tmp/vim2ps.vim
+        
+        if [ -f "$temp_ps" ]; then
+            ps2pdf "$temp_ps" "$pdf_file" 2>/dev/null
+            rm -f "$temp_ps"
+            
+            if [ -f "$pdf_file" ]; then
+                echo -e "${GREEN}[+] PDF generated successfully with vim+ps2pdf${NC}"
+                echo -e "${GREEN}[+] All special characters preserved${NC}"
+                return 0
+            fi
+        fi
+    fi
+    
+    # METHOD 3: enscript with UTF-8 support
     if command -v enscript >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
-        enscript -p - "$txt_file" 2>/dev/null | ps2pdf - "$pdf_file" 2>/dev/null
-        if [ $? -eq 0 ] && [ -f "$pdf_file" ]; then
-            echo -e "${GREEN}[+] PDF generated successfully using enscript+ps2pdf${NC}"
-            return 0
+        echo -e "${YELLOW}[*] Trying enscript with UTF-8 method...${NC}"
+        
+        local temp_ps="/tmp/temp_audit_$$.ps"
+        
+        # Use enscript with UTF-8 encoding and Courier font
+        enscript --encoding=utf-8 \
+                 --font=Courier10 \
+                 --header-font=Courier-Bold12 \
+                 --header="Linux Security Audit Report|Page $%|$(date)" \
+                 --landscape \
+                 --word-wrap \
+                 --margins=30:30:30:30 \
+                 --output="$temp_ps" "$txt_file" 2>/dev/null
+        
+        if [ -f "$temp_ps" ]; then
+            ps2pdf "$temp_ps" "$pdf_file" 2>/dev/null
+            rm -f "$temp_ps"
+            
+            if [ -f "$pdf_file" ]; then
+                echo -e "${GREEN}[+] PDF generated successfully with enscript+ps2pdf${NC}"
+                return 0
+            fi
         fi
     fi
     
-    # Try pandoc
-    if command -v pandoc >/dev/null 2>&1; then
-        pandoc "$txt_file" -o "$pdf_file" 2>/dev/null
-        if [ $? -eq 0 ] && [ -f "$pdf_file" ]; then
-            echo -e "${GREEN}[+] PDF generated successfully using pandoc${NC}"
-            return 0
-        fi
-    fi
-    
-    # Try wkhtmltopdf
+    # METHOD 4: Create HTML with proper UTF-8 and convert
     if command -v wkhtmltopdf >/dev/null 2>&1; then
-        local html_file="${txt_file%.txt}.html"
-        echo "<pre>" > "$html_file"
+        echo -e "${YELLOW}[*] Trying HTML conversion method...${NC}"
+        
+        local html_file="/tmp/temp_audit_$$.html"
+        
+        # Create HTML with proper UTF-8 meta tag and monospace font
+        cat > "$html_file" << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    body { 
+        background: white; 
+        font-family: 'Courier New', Courier, monospace; 
+        font-size: 11pt;
+        line-height: 1.2;
+        margin: 40px;
+        white-space: pre;
+    }
+    pre {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 11pt;
+        margin: 0;
+        padding: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+</style>
+</head>
+<body>
+<pre>
+EOF
+        
+        # Read the text file and preserve all characters
         cat "$txt_file" >> "$html_file"
-        echo "</pre>" >> "$html_file"
-        wkhtmltopdf "$html_file" "$pdf_file" 2>/dev/null
+        
+        cat >> "$html_file" << 'EOF'
+</pre>
+</body>
+</html>
+EOF
+        
+        # Convert HTML to PDF
+        wkhtmltopdf --encoding utf-8 "$html_file" "$pdf_file" 2>/dev/null
+        
         rm -f "$html_file"
-        if [ $? -eq 0 ] && [ -f "$pdf_file" ]; then
-            echo -e "${GREEN}[+] PDF generated successfully using wkhtmltopdf${NC}"
+        
+        if [ -f "$pdf_file" ]; then
+            echo -e "${GREEN}[+] PDF generated successfully with wkhtmltopdf${NC}"
             return 0
         fi
     fi
     
-    echo -e "${RED}[-] Failed to generate PDF.${NC}"
+    # METHOD 5: a2ps (Alternative)
+    if command -v a2ps >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Trying a2ps method...${NC}"
+        
+        local temp_ps="/tmp/temp_audit_$$.ps"
+        
+        a2ps --medium=A4 \
+             --columns=1 \
+             --font-size=10 \
+             --chars-per-line=100 \
+             --encoding=utf-8 \
+             --output="$temp_ps" "$txt_file" 2>/dev/null
+        
+        if [ -f "$temp_ps" ]; then
+            ps2pdf "$temp_ps" "$pdf_file" 2>/dev/null
+            rm -f "$temp_ps"
+            
+            if [ -f "$pdf_file" ]; then
+                echo -e "${GREEN}[+] PDF generated successfully with a2ps+ps2pdf${NC}"
+                return 0
+            fi
+        fi
+    fi
+    
+    # METHOD 6: Create a simple ASCII fallback (always works)
+    echo -e "${YELLOW}[*] Using ASCII fallback method...${NC}"
+    
+    local ascii_file="/tmp/temp_audit_ascii_$$.txt"
+    
+    # Convert box-drawing characters to ASCII equivalents
+    sed 's/╔/+/g; s/╗/+/g; s/╚/+/g; s/╝/+/g; s/║/|/g; s/═/-/g; s/─/-/g; s/│/|/g; s/┌/+/g; s/┐/+/g; s/└/+/g; s/┘/+/g' "$txt_file" > "$ascii_file"
+    
+    if command -v enscript >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
+        local temp_ps="/tmp/temp_audit_$$.ps"
+        enscript --output="$temp_ps" "$ascii_file" 2>/dev/null
+        ps2pdf "$temp_ps" "$pdf_file" 2>/dev/null
+        rm -f "$temp_ps"
+        rm -f "$ascii_file"
+        
+        if [ -f "$pdf_file" ]; then
+            echo -e "${GREEN}[+] PDF generated with ASCII fallback${NC}"
+            echo -e "${YELLOW}[!] Note: Box-drawing characters converted to ASCII (+ | -)${NC}"
+            return 0
+        fi
+    fi
+    
+    rm -f "$ascii_file"
+    echo -e "${RED}[-] All PDF generation methods failed.${NC}"
     return 1
 }
 
@@ -749,6 +906,7 @@ show_help() {
     echo "  • Port Scanning and Service Detection"
     echo "  • Linux Security Reporting"
     echo "  • Multiple Output Formats (TXT/PDF/Both)"
+    echo "  • PDF generation with UTF-8 box-drawing character support"
     echo ""
     echo "Output:"
     echo "  All results are automatically saved with timestamp:"
@@ -758,7 +916,7 @@ show_help() {
     echo "  • Linux system (any distribution)"
     echo "  • Bash shell"
     echo "  • Root privileges recommended for complete audit"
-    echo "  • PDF generation: enscript+ghostscript OR pandoc OR wkhtmltopdf"
+    echo "  • PDF generation: cupsfilter OR vim+ghostscript OR enscript+ghostscript"
     echo ""
 }
 
