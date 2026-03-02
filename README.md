@@ -76,10 +76,10 @@ Choose one of these tools for PDF output:
 ### Method 1: Direct Download
 ```bash
 # Download the script
-wget https://raw.githubusercontent.com/MokshSharma2006/Linux-Audit-Tool/main/Linux_Audit_Tool.sh
+wget https://raw.githubusercontent.com/MokshSharma2006/Linux-Audit-Tool/main/Linux_Audit_Tool_V3.0.sh
 
 # Make it executable
-chmod +x Linux_Audit_Tool.sh
+chmod +x Linux_Audit_Tool_V3.0.sh
 ```
 
 ### Method 2: Clone Repository
@@ -91,7 +91,7 @@ git clone https://github.com/MokshSharma2006/Linux-Audit-Tool.git
 cd Linux-Audit-Tool
 
 # Make it executable
-chmod +x Linux_Audit_Tool.sh
+chmod +x Linux_Audit_Tool_V3.0.sh
 ```
 
 ## 🎯 Usage
@@ -99,25 +99,25 @@ chmod +x Linux_Audit_Tool.sh
 ### Basic Usage
 ```bash
 # Run with default TXT output
-sudo ./Linux_Audit_Tool.sh
+sudo ./Linux_Audit_Tool_V3.0.sh
 ```
 
 ### Command Line Options
 ```bash
 # Show help
-./Linux_Audit_Tool.sh -h
-./Linux_Audit_Tool.sh --help
+./Linux_Audit_Tool_V3.0.sh -h
+./Linux_Audit_Tool_V3.0.sh --help
 
 # Verbose mode (more detailed output)
-sudo ./Linux_Audit_Tool.sh -v
+sudo ./Linux_Audit_Tool_V3.0.sh -v
 
 # Quiet mode (minimal console output)
-sudo ./Linux_Audit_Tool.sh -q
+sudo ./Linux_Audit_Tool_V3.0.sh -q
 
 # Specify output format
-sudo ./Linux_Audit_Tool.sh -f txt    # TXT format only
-sudo ./Linux_Audit_Tool.sh -f pdf    # PDF format only
-sudo ./Linux_Audit_Tool.sh -f both   # Both TXT and PDF formats
+sudo ./Linux_Audit_Tool_V3.0.sh -f txt    # TXT format only
+sudo ./Linux_Audit_Tool_V3.0.sh -f pdf    # PDF format only
+sudo ./Linux_Audit_Tool_V3.0.sh -f both   # Both TXT and PDF formats
 ```
 
 ### Interactive Mode
@@ -256,7 +256,7 @@ If PDF tools are not installed, the script will:
 
 ### Example 1: Basic Audit with TXT Output
 ```bash
-sudo ./Linux_Audit_Tool.sh
+sudo ./Linux_Audit_Tool_V3.0.sh
 ```
 ```
 ===============================================================
@@ -293,7 +293,7 @@ Progress: 25% - System Security Audit
 
 ### Example 2: PDF Output with Auto-Install
 ```bash
-sudo ./Linux_Audit_Tool.sh -f pdf
+sudo ./Linux_Audit_Tool_V3.0.sh -f pdf
 ```
 
 If PDF tools are missing:
@@ -312,12 +312,12 @@ Enter your choice [1-3]: 1
 
 ### Example 3: Both Formats
 ```bash
-sudo ./Linux_Audit_Tool.sh -f both
+sudo ./Linux_Audit_Tool_V3.0.sh -f both
 ```
 
 ### Example 4: Quiet Mode (for automation)
 ```bash
-sudo ./Linux_Audit_Tool.sh -q -f pdf
+sudo ./Linux_Audit_Tool_V3.0.sh -q -f pdf
 ```
 
 ## 🤝 Contributing
