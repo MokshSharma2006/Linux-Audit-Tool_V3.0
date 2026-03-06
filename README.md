@@ -351,7 +351,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Thanks to the Linux security community for inspiration
-- Built with ❤️ for system administrators and security professionals
+- Built with ❤️ for system administrators and security professionals.
 
 ## 📞 Support
 
