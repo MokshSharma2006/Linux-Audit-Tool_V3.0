@@ -17,7 +17,6 @@ A comprehensive bash-based security auditing tool for Linux systems that perform
 - [PDF Generation](#-pdf-generation)
 - [Examples](#-examples)
 - [Contributing](#-contributing)
-- [License](#-license)
 - [Author](#-author)
 
 ## 🔍 Overview
