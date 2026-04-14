@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#Linux Audit Tool
+#Linux Auditing Tool
 # Version: 3.0
 # Author: Moksh Sharma
 
