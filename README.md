@@ -355,6 +355,8 @@ For issues, questions, or contributions:
 - **GitHub Issues**: [Report a bug](https://github.com/MokshSharma2006/Linux-Audit-Tool/issues)
 - **GitHub Discussions**: [Start a discussion](https://github.com/MokshSharma2006/Linux-Audit-Tool/discussions)
 
+<!-- hello -->
+
 ---
 
 **Stay Secure!** 🔒
