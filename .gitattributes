@@ -1,0 +1,5 @@
+# Default behavior: Let Git decide text files and auto-convert
+* text=auto
+
+# Force all .sh scripts to ALWAYS use Linux line endings (LF)
+*.sh text eol=lf
