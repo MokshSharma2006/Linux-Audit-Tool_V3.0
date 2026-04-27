@@ -87,7 +87,7 @@ chmod +x Linux_Audit_Tool_V3.0.sh
 git clone https://github.com/MokshSharma2006/Linux-Audit-Tool.git
 
 # Navigate to directory
-cd Linux-Audit-Tool
+cd Linux-Audit-Tool_V3.0
 
 # Make it executable
 chmod +x Linux_Audit_Tool_V3.0.sh
