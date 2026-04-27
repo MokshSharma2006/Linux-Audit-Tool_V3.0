@@ -342,7 +342,7 @@ Contributions are welcome! Here's how you can help:
 
 **Moksh Sharma**
 - GitHub: [@MokshSharma2006](https://github.com/MokshSharma2006)
-- Project: [Linux-Audit-Tool](https://github.com/MokshSharma2006/Linux-Audit-Tool)
+- Project: [Linux-Audit-Tool_V3.0](https://github.com/MokshSharma2006/Linux-Audit-Tool_V3.0)
 
 ## 🙏 Acknowledgments
 
