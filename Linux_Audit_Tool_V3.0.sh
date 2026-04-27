@@ -37,6 +37,9 @@ OUTPUT_FILE_TXT=""
 OUTPUT_FILE_PDF=""
 TEMP_FILE="/tmp/security_audit_temp_$$.txt"
 
+# ──────────────────────────────────────────────────────────────────
+# Privilege handling
+# ──────────────────────────────────────────────────────────────────
 if [[ $EUID -eq 0 ]]; then
     SUDO=""
 else
@@ -65,12 +68,12 @@ banner() {
         echo -e "${CYAN}"
         echo "  ╔═══════════════════════════════════════════════════════════╗"
         echo "  ║                LINUX SECURITY AUDIT TOOL                  ║"
-        echo "  ║                    Enhanced Version 3.1                   ║"
+        echo "  ║                    Enhanced Version 3.0                   ║"
         echo "  ╚═══════════════════════════════════════════════════════════╝"
         echo -e "${NC}"
     else
         echo "  ==============================================================="
-        echo "                LINUX SECURITY AUDIT TOOL v3.1                   "
+        echo "                LINUX SECURITY AUDIT TOOL v3.0                   "
         echo "  ==============================================================="
     fi
     echo -e "${YELLOW}Date: $(date)${NC}"
@@ -135,27 +138,18 @@ install_pdf_tools() {
 
 # ──────────────────────────────────────────────────────────────────
 # AUTO-INSTALL AUDIT TOOLS
-# Checks for required audit tools and installs missing ones
 # ──────────────────────────────────────────────────────────────────
 auto_install_audit_tools() {
     local distro=$(detect_distro)
     local missing_tools=()
 
-    # Define tools to check: array of "binary:package" pairs
+    # Reduced to core tools to prevent endless install loops for OS-specific binaries
     local tool_pkg_map=(
         "nmap:nmap"
-        "lastlog:login"
-        "last:login"
-        "lastb:login"
         "lsof:lsof"
         "ss:iproute2"
         "netstat:net-tools"
         "auditctl:auditd"
-        "sestatus:libselinux-utils"
-        "aa-status:apparmor-utils"
-        "iw:iw"
-        "iwconfig:wireless-tools"
-        "chage:passwd"
     )
 
     echo -e "\n${CYAN}[*] Checking for required audit tools...${NC}"
@@ -169,7 +163,7 @@ auto_install_audit_tools() {
     done
 
     if [ ${#missing_tools[@]} -eq 0 ]; then
-        echo -e "${GREEN}[+] All audit tools are present.${NC}"
+        echo -e "${GREEN}[+] All core audit tools are present.${NC}"
         return 0
     fi
 
@@ -294,7 +288,6 @@ convert_to_pdf() {
     local pdf_file=$2
     echo -e "${YELLOW}[*] Converting to PDF...${NC}"
 
-    # Python + reportlab method (clean, modern — best quality)
     if command -v python3 >/dev/null 2>&1 && python3 -c "import reportlab" 2>/dev/null; then
         python3 - "$txt_file" "$pdf_file" << 'PYEOF'
 import sys, os
@@ -496,7 +489,6 @@ PYEOF
 
     if command -v vim >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
         local tmp_ps="/tmp/tmp_audit_$$.ps"
-        # FIX: use double-quote heredoc so variables expand correctly
         cat > /tmp/vim2ps_$$.vim << EOF
 :set enc=utf-8
 :set fenc=utf-8
@@ -532,7 +524,6 @@ EOF
         [ -f "$pdf_file" ] && { echo -e "${GREEN}[+] PDF via wkhtmltopdf${NC}"; return 0; }
     fi
 
-    # ASCII fallback
     local asc="/tmp/tmp_ascii_$$.txt"
     sed 's/╔/+/g;s/╗/+/g;s/╚/+/g;s/╝/+/g;s/║/|/g;s/═/-/g;s/─/-/g;s/│/|/g;s/┌/+/g;s/┐/+/g;s/└/+/g;s/┘/+/g' "$txt_file" > "$asc"
     if command -v enscript >/dev/null 2>&1 && command -v ps2pdf >/dev/null 2>&1; then
@@ -575,7 +566,6 @@ EOF
         echo "Status: SUCCESS" >> "$TEMP_FILE"
     else
         local exit_code=$?
-        # Exit code 1 from grep means "no match" which is still valid output
         if [ $exit_code -eq 1 ]; then
             echo "Status: SUCCESS (no matches found)" >> "$TEMP_FILE"
         else
@@ -614,9 +604,6 @@ Working Dir    : $(pwd)
 EOF
 }
 
-# ══════════════════════════════════════════════════════════════════
-# 1. SYSTEM SECURITY AUDIT
-# ══════════════════════════════════════════════════════════════════
 system_security_audit() {
     echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║                           1. SYSTEM SECURITY AUDIT                          ║${NC}"
@@ -626,160 +613,58 @@ system_security_audit() {
     printf '║                           1. SYSTEM SECURITY AUDIT                           ║\n' >> "$TEMP_FILE"
     printf '╚══════════════════════════════════════════════════════════════════════════════╝\n' >> "$TEMP_FILE"
 
-    check_append "1.1"  "User Accounts"              "cat /etc/passwd" \
-        "All user accounts on the system"
-
-    check_append "1.2"  "Password Hashes"            "$SUDO cat /etc/shadow 2>/dev/null || echo 'Access denied'" \
-        "Password hashes and account expiry info"
-
-    check_append "1.3"  "Empty Password Accounts"    "$SUDO awk -F: '(\$2==\"\"){print \$1\" - CRITICAL: Empty Password!\"}' /etc/shadow 2>/dev/null || echo 'Requires root'" \
-        "Accounts with no password set (critical risk)"
-
-    check_append "1.4"  "UID 0 Accounts"             "awk -F: '(\$3==0){print \$1\" - UID 0 (root equivalent)\"}' /etc/passwd" \
-        "Any account with root-level UID"
-
-    check_append "1.5"  "Last Logins"                "lastlog 2>/dev/null || grep -v 'Never logged in' /var/log/wtmp 2>/dev/null | strings | head -50 || echo 'lastlog not available'" \
-        "Last login time for every account"
-
-    check_append "1.6"  "Currently Logged In Users"  "w && echo && who -a" \
-        "Users active right now"
-
-    check_append "1.7"  "Failed Login Attempts"      "$SUDO lastb 2>/dev/null || echo 'No records or access denied'" \
-        "All recent failed login attempts"
-
-    check_append "1.8"  "Full Login History"         "last -F 2>/dev/null || last 2>/dev/null || echo 'last not available'" \
-        "Complete login/logout history"
-
-    check_append "1.9"  "Password Aging Policy"      "$SUDO chage -l root 2>/dev/null; echo; grep -E '^PASS_MAX_DAYS|^PASS_MIN_DAYS|^PASS_WARN_AGE' /etc/login.defs 2>/dev/null" \
-        "Password expiry configuration"
-
-    check_append "1.10" "Sudo Configuration"         "$SUDO cat /etc/sudoers 2>/dev/null; $SUDO ls -la /etc/sudoers.d/ 2>/dev/null; for f in \$($SUDO ls /etc/sudoers.d/ 2>/dev/null); do echo \"=== /etc/sudoers.d/\$f ===\"; $SUDO cat \"/etc/sudoers.d/\$f\" 2>/dev/null; done" \
-        "Full sudoers config including drop-in files"
-
-    check_append "1.11" "Groups and Memberships"     "cat /etc/group; echo; getent group sudo 2>/dev/null; getent group wheel 2>/dev/null; getent group adm 2>/dev/null" \
-        "All groups and privileged group memberships"
-
-    check_append "1.12" "SSH Server Configuration"   "$SUDO cat /etc/ssh/sshd_config 2>/dev/null | grep -v '^#' | grep -v '^\$' || echo 'SSH config not accessible'" \
-        "Active SSH daemon settings"
-
-    check_append "1.13" "SSH Root Login Status"      "$SUDO grep -i 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || echo 'Not explicitly set (defaults to prohibit-password)'" \
-        "Whether root can log in over SSH"
-
-    check_append "1.14" "SSH Authorized Keys"        "find /root /home -name 'authorized_keys' 2>/dev/null -exec echo '=== {} ===' \\; -exec cat {} \\;" \
-        "All SSH public keys authorized on this system"
-
-    check_append "1.15" "SSH Host Keys"              "ls -la /etc/ssh/ssh_host_* 2>/dev/null" \
-        "SSH host key files and permissions"
-
-    check_append "1.16" "World-Writable Files"       "$SUDO find / -xdev -type f -perm -0002 -exec ls -l {} + 2>/dev/null || echo 'None found or access denied'" \
-        "All world-writable files (security risk)"
-
-    check_append "1.17" "World-Writable Directories" "$SUDO find / -xdev -type d -perm -0002 -exec ls -ld {} + 2>/dev/null || echo 'None found'" \
-        "All world-writable directories"
-
-    check_append "1.18" "SUID Files"                 "$SUDO find / -xdev -perm -4000 -type f -exec ls -l {} + 2>/dev/null" \
-        "Files that run with the owner's privileges"
-
-    check_append "1.19" "SGID Files"                 "$SUDO find / -xdev -perm -2000 -type f -exec ls -l {} + 2>/dev/null" \
-        "Files that run with the group's privileges"
-
-    check_append "1.20" "Unowned Files"              "$SUDO find / -xdev \\( -nouser -o -nogroup \\) -exec ls -l {} + 2>/dev/null || echo 'None found'" \
-        "Files with no valid owner or group"
-
-    check_append "1.21" "Hidden Files in Home Dirs"  "$SUDO find /home /root -maxdepth 3 -name '.*' -exec ls -la {} + 2>/dev/null" \
-        "Dotfiles in user home directories"
-
-    check_append "1.22" "Critical Directory Perms"   "ls -ld /tmp /var /etc /root /boot /usr /bin /sbin /home 2>/dev/null" \
-        "Permissions on key system directories"
-
-    check_append "1.23" "Critical File Permissions"  "ls -l /etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers /etc/ssh/sshd_config /etc/hosts /etc/crontab 2>/dev/null" \
-        "Permissions on sensitive system files"
-
-    check_append "1.24" "Sticky Bit on Temp Dirs"    "ls -ld /tmp /var/tmp 2>/dev/null" \
-        "Verify sticky bit is set to prevent file hijacking"
-
-    check_append "1.25" "Core Dump Configuration"    "$SUDO sysctl fs.suid_dumpable kernel.core_pattern 2>/dev/null || echo 'Access denied'" \
-        "Core dump security settings"
-
-    check_append "1.26" "ASLR Status"                "cat /proc/sys/kernel/randomize_va_space 2>/dev/null || echo 'Not accessible'" \
-        "Address Space Layout Randomization (0=off,1=partial,2=full)"
-
-    check_append "1.27" "All Kernel Security Params" "$SUDO sysctl -a 2>/dev/null | grep -E 'kernel\\.(randomize|dmesg|kptr|perf|yama|unprivileged)|net\\.ipv4\\.(ip_forward|conf|tcp_syncookies)|fs\\.(suid|protected)'" \
-        "Security-relevant kernel parameters"
-
-    check_append "1.28" "Loaded Kernel Modules"      "lsmod | sort" \
-        "All currently loaded kernel modules"
-
-    check_append "1.29" "Recent Kernel Messages"     "$SUDO dmesg 2>/dev/null | tail -100 || echo 'Access denied'" \
-        "Last 100 kernel ring buffer messages"
-
-    check_append "1.30" "OS and Kernel Details"      "uname -a; echo; cat /proc/version; echo; lsb_release -a 2>/dev/null || cat /etc/os-release" \
-        "Full OS and kernel version information"
-
-    check_append "1.31" "Audit Daemon Status"        "$SUDO systemctl status auditd 2>/dev/null || echo 'auditd not available'" \
-        "Linux audit daemon status"
-
-    check_append "1.32" "Audit Rules"                "$SUDO auditctl -l 2>/dev/null || echo 'No rules or access denied'" \
-        "Active auditd rules"
-
-    check_append "1.33" "System Log Directory"       "$SUDO ls -la /var/log/ 2>/dev/null" \
-        "All log files and their permissions"
-
-    check_append "1.34" "Logging Daemon Status"      "$SUDO systemctl status rsyslog syslog systemd-journald 2>/dev/null" \
-        "Status of syslog / journald services"
-
-    check_append "1.35" "Authentication Log"         "$SUDO cat /var/log/auth.log 2>/dev/null || $SUDO cat /var/log/secure 2>/dev/null || echo 'Auth log not accessible'" \
-        "Full authentication log"
-
-    check_append "1.36" "Recent Syslog Entries"      "$SUDO tail -200 /var/log/syslog 2>/dev/null || $SUDO journalctl -n 200 --no-pager 2>/dev/null || echo 'Syslog not accessible'" \
-        "Last 200 syslog entries"
-
-    check_append "1.37" "Installed Packages"         "dpkg -l 2>/dev/null || rpm -qa 2>/dev/null || pacman -Q 2>/dev/null || echo 'Package manager not detected'" \
-        "All installed packages"
-
-    check_append "1.38" "Pending Security Updates"   "$SUDO apt list --upgradable 2>/dev/null | grep -i security || $SUDO yum list updates 2>/dev/null | grep -i security || echo 'None detected or unsupported package manager'" \
-        "Available security patches"
-
-    check_append "1.39" "Recent Package Changes"     "grep -iE 'install|upgrade' /var/log/dpkg.log 2>/dev/null | tail -100 || rpm -qa --last 2>/dev/null | head -100 || echo 'Not available'" \
-        "Recently installed or upgraded packages"
-
-    check_append "1.40" "System Cron Directories"    "$SUDO ls -laR /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly 2>/dev/null; $SUDO cat /etc/crontab 2>/dev/null" \
-        "All system-wide cron job directories"
-
-    check_append "1.41" "All User Crontabs"          "for user in \$(cut -f1 -d: /etc/passwd); do ct=\$($SUDO crontab -u \"\$user\" -l 2>/dev/null); if [ -n \"\$ct\" ]; then echo \"=== Crontab for \$user ===\"; echo \"\$ct\"; fi; done; $SUDO ls -la /var/spool/cron/crontabs/ 2>/dev/null || true" \
-        "Every user's crontab entries"
-
-    check_append "1.42" "Systemd Timers"             "$SUDO systemctl list-timers --all 2>/dev/null || echo 'Not available'" \
-        "All systemd timer units"
-
-    check_append "1.43" "At Jobs"                    "$SUDO atq 2>/dev/null; $SUDO ls -la /var/spool/at/ 2>/dev/null || echo 'at not installed or no jobs'" \
-        "Scheduled at-jobs"
-
-    check_append "1.44" "SELinux Status"             "$SUDO sestatus 2>/dev/null || echo 'SELinux not installed'" \
-        "SELinux enforcement status and policy"
-
-    check_append "1.45" "AppArmor Status"            "$SUDO aa-status 2>/dev/null || echo 'AppArmor not installed'" \
-        "AppArmor profiles and enforcement status"
-
-    check_append "1.46" "Open Files (lsof)"          "$SUDO lsof 2>/dev/null || echo 'lsof not available'" \
-        "All open file handles and sockets"
-
-    check_append "1.47" "Running Processes"          "ps auxf 2>/dev/null || ps aux 2>/dev/null" \
-        "All running processes with tree view"
-
-    check_append "1.48" "Systemd Services"           "$SUDO systemctl list-units --type=service --all 2>/dev/null || echo 'systemd not available'" \
-        "All systemd service units and their status"
-
-    check_append "1.49" "Environment Variables"      "env | sort" \
-        "Current shell environment"
-
-    check_append "1.50" "Mounted Filesystems"        "mount | sort; echo; cat /etc/fstab 2>/dev/null" \
-        "Mounted filesystems and fstab configuration"
+    check_append "1.1"  "User Accounts"              "cat /etc/passwd" "All user accounts on the system"
+    check_append "1.2"  "Password Hashes"            "$SUDO cat /etc/shadow 2>/dev/null || echo 'Access denied'" "Password hashes and account expiry info"
+    check_append "1.3"  "Empty Password Accounts"    "$SUDO awk -F: '(\$2==\"\"){print \$1\" - CRITICAL: Empty Password!\"}' /etc/shadow 2>/dev/null || echo 'Requires root'" "Accounts with no password set (critical risk)"
+    check_append "1.4"  "UID 0 Accounts"             "awk -F: '(\$3==0){print \$1\" - UID 0 (root equivalent)\"}' /etc/passwd" "Any account with root-level UID"
+    check_append "1.5"  "Last Logins"                "lastlog 2>/dev/null || grep -v 'Never logged in' /var/log/wtmp 2>/dev/null | strings | head -50 || echo 'lastlog not available'" "Last login time for every account"
+    check_append "1.6"  "Currently Logged In Users"  "w && echo && who -a" "Users active right now"
+    check_append "1.7"  "Failed Login Attempts"      "$SUDO lastb 2>/dev/null || echo 'No records or access denied'" "All recent failed login attempts"
+    check_append "1.8"  "Full Login History"         "last -F 2>/dev/null || last 2>/dev/null || echo 'last not available'" "Complete login/logout history"
+    check_append "1.9"  "Password Aging Policy"      "$SUDO chage -l root 2>/dev/null; echo; grep -E '^PASS_MAX_DAYS|^PASS_MIN_DAYS|^PASS_WARN_AGE' /etc/login.defs 2>/dev/null" "Password expiry configuration"
+    check_append "1.10" "Sudo Configuration"         "$SUDO cat /etc/sudoers 2>/dev/null; $SUDO ls -la /etc/sudoers.d/ 2>/dev/null; for f in \$($SUDO ls /etc/sudoers.d/ 2>/dev/null); do echo \"=== /etc/sudoers.d/\$f ===\"; $SUDO cat \"/etc/sudoers.d/\$f\" 2>/dev/null; done" "Full sudoers config including drop-in files"
+    check_append "1.11" "Groups and Memberships"     "cat /etc/group; echo; getent group sudo 2>/dev/null; getent group wheel 2>/dev/null; getent group adm 2>/dev/null" "All groups and privileged group memberships"
+    check_append "1.12" "SSH Server Configuration"   "$SUDO cat /etc/ssh/sshd_config 2>/dev/null | grep -v '^#' | grep -v '^\$' || echo 'SSH config not accessible'" "Active SSH daemon settings"
+    check_append "1.13" "SSH Root Login Status"      "$SUDO grep -i 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || echo 'Not explicitly set (defaults to prohibit-password)'" "Whether root can log in over SSH"
+    check_append "1.14" "SSH Authorized Keys"        "find /root /home -name 'authorized_keys' 2>/dev/null -exec echo '=== {} ===' \\; -exec cat {} \\;" "All SSH public keys authorized on this system"
+    check_append "1.15" "SSH Host Keys"              "ls -la /etc/ssh/ssh_host_* 2>/dev/null" "SSH host key files and permissions"
+    check_append "1.16" "World-Writable Files"       "$SUDO find / -xdev -type f -perm -0002 -exec ls -l {} + 2>/dev/null || echo 'None found or access denied'" "All world-writable files (security risk)"
+    check_append "1.17" "World-Writable Directories" "$SUDO find / -xdev -type d -perm -0002 -exec ls -ld {} + 2>/dev/null || echo 'None found'" "All world-writable directories"
+    check_append "1.18" "SUID Files"                 "$SUDO find / -xdev -perm -4000 -type f -exec ls -l {} + 2>/dev/null" "Files that run with the owner's privileges"
+    check_append "1.19" "SGID Files"                 "$SUDO find / -xdev -perm -2000 -type f -exec ls -l {} + 2>/dev/null" "Files that run with the group's privileges"
+    check_append "1.20" "Unowned Files"              "$SUDO find / -xdev \\( -nouser -o -nogroup \\) -exec ls -l {} + 2>/dev/null || echo 'None found'" "Files with no valid owner or group"
+    check_append "1.21" "Hidden Files in Home Dirs"  "$SUDO find /home /root -maxdepth 3 -name '.*' -exec ls -la {} + 2>/dev/null" "Dotfiles in user home directories"
+    check_append "1.22" "Critical Directory Perms"   "ls -ld /tmp /var /etc /root /boot /usr /bin /sbin /home 2>/dev/null" "Permissions on key system directories"
+    check_append "1.23" "Critical File Permissions"  "ls -l /etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers /etc/ssh/sshd_config /etc/hosts /etc/crontab 2>/dev/null" "Permissions on sensitive system files"
+    check_append "1.24" "Sticky Bit on Temp Dirs"    "ls -ld /tmp /var/tmp 2>/dev/null" "Verify sticky bit is set to prevent file hijacking"
+    check_append "1.25" "Core Dump Configuration"    "$SUDO sysctl fs.suid_dumpable kernel.core_pattern 2>/dev/null || echo 'Access denied'" "Core dump security settings"
+    check_append "1.26" "ASLR Status"                "cat /proc/sys/kernel/randomize_va_space 2>/dev/null || echo 'Not accessible'" "Address Space Layout Randomization (0=off,1=partial,2=full)"
+    check_append "1.27" "All Kernel Security Params" "$SUDO sysctl -a 2>/dev/null | grep -E 'kernel\\.(randomize|dmesg|kptr|perf|yama|unprivileged)|net\\.ipv4\\.(ip_forward|conf|tcp_syncookies)|fs\\.(suid|protected)'" "Security-relevant kernel parameters"
+    check_append "1.28" "Loaded Kernel Modules"      "lsmod | sort" "All currently loaded kernel modules"
+    check_append "1.29" "Recent Kernel Messages"     "$SUDO dmesg 2>/dev/null | tail -100 || echo 'Access denied'" "Last 100 kernel ring buffer messages"
+    check_append "1.30" "OS and Kernel Details"      "uname -a; echo; cat /proc/version; echo; lsb_release -a 2>/dev/null || cat /etc/os-release" "Full OS and kernel version information"
+    check_append "1.31" "Audit Daemon Status"        "$SUDO systemctl status auditd 2>/dev/null || echo 'auditd not available'" "Linux audit daemon status"
+    check_append "1.32" "Audit Rules"                "$SUDO auditctl -l 2>/dev/null || echo 'No rules or access denied'" "Active auditd rules"
+    check_append "1.33" "System Log Directory"       "$SUDO ls -la /var/log/ 2>/dev/null" "All log files and their permissions"
+    check_append "1.34" "Logging Daemon Status"      "$SUDO systemctl status rsyslog syslog systemd-journald 2>/dev/null" "Status of syslog / journald services"
+    check_append "1.35" "Authentication Log"         "$SUDO cat /var/log/auth.log 2>/dev/null || $SUDO cat /var/log/secure 2>/dev/null || echo 'Auth log not accessible'" "Full authentication log"
+    check_append "1.36" "Recent Syslog Entries"      "$SUDO tail -200 /var/log/syslog 2>/dev/null || $SUDO journalctl -n 200 --no-pager 2>/dev/null || echo 'Syslog not accessible'" "Last 200 syslog entries"
+    check_append "1.37" "Installed Packages"         "dpkg -l 2>/dev/null || rpm -qa 2>/dev/null || pacman -Q 2>/dev/null || echo 'Package manager not detected'" "All installed packages"
+    check_append "1.38" "Pending Security Updates"   "$SUDO apt list --upgradable 2>/dev/null | grep -i security || $SUDO yum list updates 2>/dev/null | grep -i security || echo 'None detected or unsupported package manager'" "Available security patches"
+    check_append "1.39" "Recent Package Changes"     "grep -iE 'install|upgrade' /var/log/dpkg.log 2>/dev/null | tail -100 || rpm -qa --last 2>/dev/null | head -100 || echo 'Not available'" "Recently installed or upgraded packages"
+    check_append "1.40" "System Cron Directories"    "$SUDO ls -laR /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly 2>/dev/null; $SUDO cat /etc/crontab 2>/dev/null" "All system-wide cron job directories"
+    check_append "1.41" "All User Crontabs"          "for user in \$(cut -f1 -d: /etc/passwd); do ct=\$($SUDO crontab -u \"\$user\" -l 2>/dev/null); if [ -n \"\$ct\" ]; then echo \"=== Crontab for \$user ===\"; echo \"\$ct\"; fi; done; $SUDO ls -la /var/spool/cron/crontabs/ 2>/dev/null || true" "Every user's crontab entries"
+    check_append "1.42" "Systemd Timers"             "$SUDO systemctl list-timers --all 2>/dev/null || echo 'Not available'" "All systemd timer units"
+    check_append "1.43" "At Jobs"                    "$SUDO atq 2>/dev/null; $SUDO ls -la /var/spool/at/ 2>/dev/null || echo 'at not installed or no jobs'" "Scheduled at-jobs"
+    check_append "1.44" "SELinux Status"             "$SUDO sestatus 2>/dev/null || echo 'SELinux not installed'" "SELinux enforcement status and policy"
+    check_append "1.45" "AppArmor Status"            "$SUDO aa-status 2>/dev/null || echo 'AppArmor not installed'" "AppArmor profiles and enforcement status"
+    check_append "1.46" "Open Files (lsof)"          "$SUDO lsof 2>/dev/null || echo 'lsof not available'" "All open file handles and sockets"
+    check_append "1.47" "Running Processes"          "ps auxf 2>/dev/null || ps aux 2>/dev/null" "All running processes with tree view"
+    check_append "1.48" "Systemd Services"           "$SUDO systemctl list-units --type=service --all 2>/dev/null || echo 'systemd not available'" "All systemd service units and their status"
+    check_append "1.49" "Environment Variables"      "env | sort" "Current shell environment"
+    check_append "1.50" "Mounted Filesystems"        "mount | sort; echo; cat /etc/fstab 2>/dev/null" "Mounted filesystems and fstab configuration"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# 2. NETWORK SECURITY AUDIT
-# ══════════════════════════════════════════════════════════════════
 network_security_audit() {
     echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║                          2. NETWORK SECURITY AUDIT                          ║${NC}"
@@ -789,76 +674,30 @@ network_security_audit() {
     printf '║                          2. NETWORK SECURITY AUDIT                           ║\n' >> "$TEMP_FILE"
     printf '╚══════════════════════════════════════════════════════════════════════════════╝\n' >> "$TEMP_FILE"
 
-    check_append "2.1"  "Network Interfaces"         "ip -br addr show; echo; ip link show" \
-        "Interface list and link status"
-
-    check_append "2.2"  "Full IP Address Config"     "ip addr show" \
-        "All IP addresses on all interfaces"
-
-    check_append "2.3"  "Active Interfaces"          "ip -br addr show | grep -v DOWN" \
-        "Interfaces currently up"
-
-    check_append "2.4"  "Listening TCP Services"     "$SUDO ss -tulnp 2>/dev/null | grep LISTEN || $SUDO netstat -tulnp 2>/dev/null | grep LISTEN || echo 'Tools not available'" \
-        "TCP ports currently accepting connections"
-
-    check_append "2.5"  "Listening UDP Services"     "$SUDO ss -ulnp 2>/dev/null || $SUDO netstat -ulnp 2>/dev/null || echo 'Not available'" \
-        "UDP ports currently open"
-
-    check_append "2.6"  "All Network Connections"    "$SUDO ss -atnp 2>/dev/null || $SUDO netstat -atnp 2>/dev/null || echo 'Not available'" \
-        "All established and listening connections"
-
-    check_append "2.7"  "IPTables Filter Rules"      "$SUDO iptables -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" \
-        "iptables FILTER chain"
-
-    check_append "2.8"  "IPTables NAT Rules"         "$SUDO iptables -t nat -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" \
-        "iptables NAT chain"
-
-    check_append "2.9"  "IPTables Mangle Rules"      "$SUDO iptables -t mangle -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" \
-        "iptables mangle chain"
-
-    check_append "2.10" "IP6Tables Rules"            "$SUDO ip6tables -L -n -v --line-numbers 2>/dev/null || echo 'ip6tables not accessible'" \
-        "IPv6 firewall rules"
-
-    check_append "2.11" "UFW Status"                 "$SUDO ufw status verbose 2>/dev/null || echo 'UFW not installed'" \
-        "Uncomplicated Firewall status"
-
-    check_append "2.12" "Firewalld Status"           "$SUDO firewall-cmd --state 2>/dev/null && $SUDO firewall-cmd --get-active-zones 2>/dev/null && $SUDO firewall-cmd --list-all 2>/dev/null || echo 'Not available'" \
-        "Firewalld zones and rules"
-
-    check_append "2.13" "nftables Ruleset"           "$SUDO nft list ruleset 2>/dev/null || echo 'nftables not available'" \
-        "Modern nftables firewall rules"
-
-    check_append "2.14" "DNS and Hosts Config"       "cat /etc/resolv.conf 2>/dev/null; echo; cat /etc/hosts; echo; cat /etc/nsswitch.conf 2>/dev/null" \
-        "Resolver, hosts file, name service config"
-
-    check_append "2.15" "Routing Table"              "ip route show; echo; $SUDO route -n 2>/dev/null" \
-        "IPv4 routing table"
-
-    check_append "2.16" "IPv6 Routes"                "ip -6 route show 2>/dev/null || echo 'No IPv6 routes'" \
-        "IPv6 routing table"
-
-    check_append "2.17" "ARP Table"                  "ip neigh show || arp -a 2>/dev/null || echo 'Not available'" \
-        "ARP neighbour table"
-
-    check_append "2.18" "Interface Statistics"       "ip -s link" \
-        "TX/RX counters for all interfaces"
-
-    check_append "2.19" "Protocol Statistics"        "$SUDO netstat -s 2>/dev/null || $SUDO ss -s 2>/dev/null || echo 'Not available'" \
-        "Per-protocol network statistics"
-
-    check_append "2.20" "Wireless Interfaces"        "iwconfig 2>/dev/null || iw dev 2>/dev/null || echo 'No wireless interfaces'" \
-        "Wi-Fi interface configuration"
-
-    check_append "2.21" "Hostname Config"            "hostname -f 2>/dev/null; hostname -I 2>/dev/null; cat /etc/hostname 2>/dev/null" \
-        "System hostname settings"
-
-    check_append "2.22" "NetworkManager Status"      "$SUDO systemctl status NetworkManager 2>/dev/null || echo 'NetworkManager not running'" \
-        "NetworkManager service status"
+    check_append "2.1"  "Network Interfaces"         "ip -br addr show; echo; ip link show" "Interface list and link status"
+    check_append "2.2"  "Full IP Address Config"     "ip addr show" "All IP addresses on all interfaces"
+    check_append "2.3"  "Active Interfaces"          "ip -br addr show | grep -v DOWN" "Interfaces currently up"
+    check_append "2.4"  "Listening TCP Services"     "$SUDO ss -tulnp 2>/dev/null | grep LISTEN || $SUDO netstat -tulnp 2>/dev/null | grep LISTEN || echo 'Tools not available'" "TCP ports currently accepting connections"
+    check_append "2.5"  "Listening UDP Services"     "$SUDO ss -ulnp 2>/dev/null || $SUDO netstat -ulnp 2>/dev/null || echo 'Not available'" "UDP ports currently open"
+    check_append "2.6"  "All Network Connections"    "$SUDO ss -atnp 2>/dev/null || $SUDO netstat -atnp 2>/dev/null || echo 'Not available'" "All established and listening connections"
+    check_append "2.7"  "IPTables Filter Rules"      "$SUDO iptables -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" "iptables FILTER chain"
+    check_append "2.8"  "IPTables NAT Rules"         "$SUDO iptables -t nat -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" "iptables NAT chain"
+    check_append "2.9"  "IPTables Mangle Rules"      "$SUDO iptables -t mangle -L -n -v --line-numbers 2>/dev/null || echo 'Not accessible'" "iptables mangle chain"
+    check_append "2.10" "IP6Tables Rules"            "$SUDO ip6tables -L -n -v --line-numbers 2>/dev/null || echo 'ip6tables not accessible'" "IPv6 firewall rules"
+    check_append "2.11" "UFW Status"                 "$SUDO ufw status verbose 2>/dev/null || echo 'UFW not installed'" "Uncomplicated Firewall status"
+    check_append "2.12" "Firewalld Status"           "$SUDO firewall-cmd --state 2>/dev/null && $SUDO firewall-cmd --get-active-zones 2>/dev/null && $SUDO firewall-cmd --list-all 2>/dev/null || echo 'Not available'" "Firewalld zones and rules"
+    check_append "2.13" "nftables Ruleset"           "$SUDO nft list ruleset 2>/dev/null || echo 'nftables not available'" "Modern nftables firewall rules"
+    check_append "2.14" "DNS and Hosts Config"       "cat /etc/resolv.conf 2>/dev/null; echo; cat /etc/hosts; echo; cat /etc/nsswitch.conf 2>/dev/null" "Resolver, hosts file, name service config"
+    check_append "2.15" "Routing Table"              "ip route show; echo; $SUDO route -n 2>/dev/null" "IPv4 routing table"
+    check_append "2.16" "IPv6 Routes"                "ip -6 route show 2>/dev/null || echo 'No IPv6 routes'" "IPv6 routing table"
+    check_append "2.17" "ARP Table"                  "ip neigh show || arp -a 2>/dev/null || echo 'Not available'" "ARP neighbour table"
+    check_append "2.18" "Interface Statistics"       "ip -s link" "TX/RX counters for all interfaces"
+    check_append "2.19" "Protocol Statistics"        "$SUDO netstat -s 2>/dev/null || $SUDO ss -s 2>/dev/null || echo 'Not available'" "Per-protocol network statistics"
+    check_append "2.20" "Wireless Interfaces"        "iwconfig 2>/dev/null || iw dev 2>/dev/null || echo 'No wireless interfaces'" "Wi-Fi interface configuration"
+    check_append "2.21" "Hostname Config"            "hostname -f 2>/dev/null; hostname -I 2>/dev/null; cat /etc/hostname 2>/dev/null" "System hostname settings"
+    check_append "2.22" "NetworkManager Status"      "$SUDO systemctl status NetworkManager 2>/dev/null || echo 'NetworkManager not running'" "NetworkManager service status"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# 3. PORT SCANNING ANALYSIS
-# ══════════════════════════════════════════════════════════════════
 port_scanning_audit() {
     echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║                         3. PORT SCANNING ANALYSIS                           ║${NC}"
@@ -869,25 +708,11 @@ port_scanning_audit() {
     printf '╚══════════════════════════════════════════════════════════════════════════════╝\n' >> "$TEMP_FILE"
 
     if check_command "nmap"; then
-        check_append "3.1" "Quick Port Scan (top 1000)" \
-            "nmap -sS --top-ports 1000 -T4 localhost 2>/dev/null || nmap --top-ports 1000 localhost 2>/dev/null" \
-            "Fast scan of the 1000 most common TCP ports"
-
-        check_append "3.2" "Service Version Detection" \
-            "nmap -sV -sC --top-ports 100 localhost 2>/dev/null || echo 'Requires elevated privileges'" \
-            "Version and default script scan (top 100)"
-
-        check_append "3.3" "UDP Port Scan" \
-            "$SUDO nmap -sU --top-ports 100 localhost 2>/dev/null || echo 'UDP scan requires root'" \
-            "UDP scan of top 100 ports"
-
-        check_append "3.4" "Full TCP Scan (all ports)" \
-            "$SUDO nmap -sS -p- -T4 localhost 2>/dev/null || echo 'Requires root'" \
-            "Scan all 65535 TCP ports"
-
-        check_append "3.5" "OS Detection" \
-            "$SUDO nmap -O localhost 2>/dev/null || echo 'Requires root'" \
-            "Remote OS fingerprinting"
+        check_append "3.1" "Quick Port Scan (top 1000)" "nmap -sS --top-ports 1000 -T4 localhost 2>/dev/null || nmap --top-ports 1000 localhost 2>/dev/null" "Fast scan of the 1000 most common TCP ports"
+        check_append "3.2" "Service Version Detection" "nmap -sV -sC --top-ports 100 localhost 2>/dev/null || echo 'Requires elevated privileges'" "Version and default script scan (top 100)"
+        check_append "3.3" "UDP Port Scan" "$SUDO nmap -sU --top-ports 100 localhost 2>/dev/null || echo 'UDP scan requires root'" "UDP scan of top 100 ports"
+        check_append "3.4" "Full TCP Scan (all ports)" "$SUDO nmap -sS -p- -T4 localhost 2>/dev/null || echo 'Requires root'" "Scan all 65535 TCP ports"
+        check_append "3.5" "OS Detection" "$SUDO nmap -O localhost 2>/dev/null || echo 'Requires root'" "Remote OS fingerprinting"
     else
         check_append "3.1" "Fallback Port Scan (bash)" "
             echo 'nmap not available - using bash /dev/tcp fallback'
@@ -900,28 +725,16 @@ port_scanning_audit() {
         " "TCP probe of common ports using bash built-ins"
     fi
 
-    check_append "3.6" "Listening Services Detail" \
-        "$SUDO netstat -tlnp 2>/dev/null | grep LISTEN || $SUDO ss -tlnp 2>/dev/null | grep LISTEN || echo 'Not available'" \
-        "All services with listening sockets"
-
-    check_append "3.7" "Process-to-Port Mapping" \
-        "$SUDO lsof -i -P -n 2>/dev/null || echo 'lsof not available'" \
-        "Which process owns each open port"
-
-    check_append "3.8" "Unix Domain Sockets" \
-        "$SUDO ss -xnp 2>/dev/null || echo 'Not available'" \
-        "Local Unix socket connections"
+    check_append "3.6" "Listening Services Detail" "$SUDO netstat -tlnp 2>/dev/null | grep LISTEN || $SUDO ss -tlnp 2>/dev/null | grep LISTEN || echo 'Not available'" "All services with listening sockets"
+    check_append "3.7" "Process-to-Port Mapping" "$SUDO lsof -i -P -n 2>/dev/null || echo 'lsof not available'" "Which process owns each open port"
+    check_append "3.8" "Unix Domain Sockets" "$SUDO ss -xnp 2>/dev/null || echo 'Not available'" "Local Unix socket connections"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# 4. SECURITY SUMMARY & RECOMMENDATIONS
-# ══════════════════════════════════════════════════════════════════
 generate_security_summary() {
     echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║                      4. SECURITY SUMMARY & RECOMMENDATIONS                   ║${NC}"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════════════════╝${NC}\n"
 
-    # Snapshot the file BEFORE appending to it
     local SNAPSHOT="/tmp/security_audit_snapshot_$$.txt"
     cp "$TEMP_FILE" "$SNAPSHOT"
 
@@ -939,7 +752,6 @@ EOF
     echo -e "${YELLOW}[*] Analysing audit results...${NC}"
     echo "Potential findings extracted from audit data:" >> "$TEMP_FILE"
 
-    # Grep the snapshot (read-only) and append to the live file
     grep -iE \
         'empty password|permitrootlogin yes|world.writable|suid.*root|uid 0|password.*none|audit.*inactive|CRITICAL|FAILED' \
         "$SNAPSHOT" | grep -v "Description:" >> "$TEMP_FILE" 2>/dev/null
@@ -1135,7 +947,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Set filenames if not already set by interactive mode
 if [ -z "$OUTPUT_FILE_TXT" ]; then
     timestamp=$(date +%Y%m%d_%H%M%S)
     OUTPUT_FILE_TXT="Linux_security_audit_${timestamp}.txt"
