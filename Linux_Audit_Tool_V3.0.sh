@@ -35,7 +35,27 @@ SCRIPT_START_TIME=$(date +%s)
 OUTPUT_FORMAT="txt"
 OUTPUT_FILE_TXT=""
 OUTPUT_FILE_PDF=""
+OUTPUT_FILE_HTML=""
 TEMP_FILE="/tmp/security_audit_temp_$$.txt"
+
+# ── Metric counters (populated during audit) ──────────────────────────────────
+METRIC_OPEN_PORTS=0
+METRIC_SUID_FILES=0
+METRIC_WORLD_WRITABLE=0
+METRIC_FAILED_LOGINS=0
+METRIC_USERS_NO_PASS=0
+METRIC_ROOT_USERS=0
+METRIC_LISTENING_SVCS=0
+METRIC_PENDING_UPDATES=0
+METRIC_RUNNING_PROCS=0
+METRIC_DISK_USAGE=0
+METRIC_CPU_LOAD=""
+METRIC_MEM_USED=0
+METRIC_MEM_TOTAL=0
+METRIC_UFW_STATUS="unknown"
+METRIC_SSH_ROOT="unknown"
+METRIC_SELINUX="unknown"
+METRIC_APPARMOR="unknown"
 
 # ──────────────────────────────────────────────────────────────────
 # Privilege handling
@@ -281,6 +301,7 @@ choose_output_format() {
     local timestamp=$(date +%Y%m%d_%H%M%S)
     OUTPUT_FILE_TXT="Linux_security_audit_${timestamp}.txt"
     OUTPUT_FILE_PDF="Linux_security_audit_${timestamp}.pdf"
+    OUTPUT_FILE_HTML="Linux_security_audit_${timestamp}.html"
 }
 
 convert_to_pdf() {
@@ -663,6 +684,66 @@ system_security_audit() {
     check_append "1.48" "Systemd Services"           "$SUDO systemctl list-units --type=service --all 2>/dev/null || echo 'systemd not available'" "All systemd service units and their status"
     check_append "1.49" "Environment Variables"      "env | sort" "Current shell environment"
     check_append "1.50" "Mounted Filesystems"        "mount | sort; echo; cat /etc/fstab 2>/dev/null" "Mounted filesystems and fstab configuration"
+
+    # ── Collect metrics for graph generation ─────────────────────────────────
+    echo -e "${CYAN}[*] Collecting security metrics for dashboard...${NC}"
+
+    # SUID files count
+    METRIC_SUID_FILES=$(find / -perm -4000 -type f 2>/dev/null | wc -l)
+
+    # World-writable files (excluding /proc /sys /dev)
+    METRIC_WORLD_WRITABLE=$(find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o \
+        -perm -0002 -type f -print 2>/dev/null | wc -l)
+
+    # Users with empty passwords
+    METRIC_USERS_NO_PASS=$(awk -F: '($2=="" || $2=="!!" || $2=="*"){print $1}' /etc/shadow 2>/dev/null | wc -l)
+
+    # UID 0 (root equivalent) users
+    METRIC_ROOT_USERS=$(awk -F: '$3==0{print $1}' /etc/passwd 2>/dev/null | wc -l)
+
+    # Failed login attempts
+    METRIC_FAILED_LOGINS=$(grep -c "Failed password\|authentication failure\|FAILED" \
+        /var/log/auth.log /var/log/secure /var/log/audit/audit.log 2>/dev/null | \
+        awk -F: '{sum+=$2}END{print sum+0}')
+
+    # Open/listening TCP ports
+    METRIC_OPEN_PORTS=$(ss -tlnp 2>/dev/null | grep -c LISTEN || netstat -tlnp 2>/dev/null | grep -c LISTEN || echo 0)
+
+    # Listening services
+    METRIC_LISTENING_SVCS=$METRIC_OPEN_PORTS
+
+    # Pending security updates
+    METRIC_PENDING_UPDATES=$(apt list --upgradable 2>/dev/null | grep -c security || \
+        yum list updates 2>/dev/null | grep -c security || echo 0)
+
+    # Running processes
+    METRIC_RUNNING_PROCS=$(ps aux 2>/dev/null | wc -l)
+
+    # Disk usage (root partition %)
+    METRIC_DISK_USAGE=$(df / 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
+
+    # CPU load (1-min)
+    METRIC_CPU_LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}')
+
+    # Memory
+    METRIC_MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    METRIC_MEM_USED=$(free -m  2>/dev/null | awk '/^Mem:/{print $3}')
+
+    # UFW / firewall
+    if command -v ufw >/dev/null 2>&1; then
+        METRIC_UFW_STATUS=$(ufw status 2>/dev/null | grep -q "Status: active" && echo "active" || echo "inactive")
+    fi
+
+    # SSH root login
+    METRIC_SSH_ROOT=$(grep -i "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null | \
+        awk '{print tolower($2)}' | head -1)
+    [ -z "$METRIC_SSH_ROOT" ] && METRIC_SSH_ROOT="not-set"
+
+    # SELinux
+    METRIC_SELINUX=$(sestatus 2>/dev/null | grep "SELinux status" | awk '{print $3}' || echo "not-installed")
+
+    # AppArmor
+    METRIC_APPARMOR=$(aa-status 2>/dev/null | grep -q "apparmor module is loaded" && echo "loaded" || echo "not-loaded")
 }
 
 network_security_audit() {
@@ -831,6 +912,325 @@ NOTE: This is a point-in-time assessment. Schedule recurring audits
 EOF
 }
 
+generate_html_dashboard() {
+    local html_file="$1"
+    local audit_duration=$(($(date +%s) - SCRIPT_START_TIME))
+
+    # Compute memory percentage safely
+    local mem_pct=0
+    if [ "${METRIC_MEM_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+        mem_pct=$(( METRIC_MEM_USED * 100 / METRIC_MEM_TOTAL ))
+    fi
+
+    # Derive overall risk score (0-100, lower = better)
+    local risk=0
+    [ "$METRIC_SSH_ROOT" = "yes" ]       && risk=$((risk + 25))
+    [ "$METRIC_UFW_STATUS" = "inactive" ] && risk=$((risk + 20))
+    [ "${METRIC_USERS_NO_PASS:-0}" -gt 0 ] && risk=$((risk + 20))
+    [ "$METRIC_SELINUX" = "disabled" ]   && risk=$((risk + 10))
+    [ "$METRIC_APPARMOR" != "loaded" ]   && risk=$((risk + 10))
+    [ "${METRIC_FAILED_LOGINS:-0}" -gt 50 ] && risk=$((risk + 15))
+    [ "${METRIC_SUID_FILES:-0}" -gt 30 ]    && risk=$((risk + 10))
+    [ "$risk" -gt 100 ] && risk=100
+
+    local risk_label="Low"
+    local risk_color="#22c55e"
+    if [ "$risk" -ge 60 ]; then risk_label="High";   risk_color="#ef4444"
+    elif [ "$risk" -ge 30 ]; then risk_label="Medium"; risk_color="#f59e0b"
+    fi
+
+    echo -e "${CYAN}[*] Generating HTML dashboard: ${YELLOW}$html_file${NC}"
+
+    cat > "$html_file" << HTMLEOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux Security Audit Dashboard — $(hostname)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a;--bg2:#1e293b;--bg3:#334155;--text:#f1f5f9;--muted:#94a3b8;
+    --green:#22c55e;--yellow:#f59e0b;--red:#ef4444;--blue:#3b82f6;--purple:#a855f7;
+    --cyan:#06b6d4;--border:#334155;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.6;padding:24px}
+  h1{font-size:1.6rem;font-weight:700;margin-bottom:4px}
+  h2{font-size:1rem;font-weight:600;color:var(--muted);margin-bottom:16px}
+  h3{font-size:.85rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+  .meta{font-size:.8rem;color:var(--muted)}
+  .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;font-weight:700}
+  .grid{display:grid;gap:16px;margin-bottom:24px}
+  .grid-4{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .grid-2{grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+  .grid-3{grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .stat-val{font-size:2.4rem;font-weight:800;line-height:1;margin-bottom:4px}
+  .stat-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .stat-sub{font-size:.7rem;color:var(--muted);margin-top:4px}
+  .chart-wrap{position:relative;height:220px}
+  .check-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+  .check-row:last-child{border:none}
+  .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .dot-ok{background:var(--green)} .dot-warn{background:var(--yellow)} .dot-bad{background:var(--red)}
+  .check-name{flex:1;font-size:.82rem}
+  .check-val{font-size:.78rem;color:var(--muted);text-align:right}
+  .risk-bar-wrap{height:10px;background:var(--bg3);border-radius:5px;margin-top:8px;overflow:hidden}
+  .risk-bar{height:100%;border-radius:5px;transition:width .5s}
+  .section-title{font-size:.95rem;font-weight:700;color:var(--text);margin:0 0 4px}
+  footer{text-align:center;color:var(--muted);font-size:.72rem;margin-top:32px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>&#x1F6E1; Linux Security Audit</h1>
+    <h2>$(hostname) &nbsp;&bull;&nbsp; $(uname -r) &nbsp;&bull;&nbsp; $(date)</h2>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:2rem;font-weight:800;color:${risk_color}">${risk}/100</div>
+    <span class="badge" style="background:${risk_color}22;color:${risk_color};border:1px solid ${risk_color}55">Risk: ${risk_label}</span>
+    <div class="meta" style="margin-top:6px">Audit duration: ${audit_duration}s</div>
+  </div>
+</div>
+
+<!-- ── KPI cards ────────────────────────────────────────── -->
+<div class="grid grid-4">
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_OPEN_PORTS:-0}" -gt 10 ] && echo 'var(--yellow)' || echo 'var(--green)')">${METRIC_OPEN_PORTS:-0}</div>
+    <div class="stat-label">Open TCP ports</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_SUID_FILES:-0}" -gt 30 ] && echo 'var(--yellow)' || echo 'var(--green)')">${METRIC_SUID_FILES:-0}</div>
+    <div class="stat-label">SUID binaries</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_WORLD_WRITABLE:-0}" -gt 0 ] && echo 'var(--red)' || echo 'var(--green)')">${METRIC_WORLD_WRITABLE:-0}</div>
+    <div class="stat-label">World-writable files</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_FAILED_LOGINS:-0}" -gt 20 ] && echo 'var(--red)' || echo 'var(--green)')">${METRIC_FAILED_LOGINS:-0}</div>
+    <div class="stat-label">Failed logins</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_USERS_NO_PASS:-0}" -gt 0 ] && echo 'var(--red)' || echo 'var(--green)')">${METRIC_USERS_NO_PASS:-0}</div>
+    <div class="stat-label">Users w/ empty password</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_ROOT_USERS:-1}" -gt 1 ] && echo 'var(--red)' || echo 'var(--green)')">${METRIC_ROOT_USERS:-1}</div>
+    <div class="stat-label">Root-equiv (UID 0)</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:$([ "${METRIC_PENDING_UPDATES:-0}" -gt 0 ] && echo 'var(--yellow)' || echo 'var(--green)')">${METRIC_PENDING_UPDATES:-0}</div>
+    <div class="stat-label">Pending sec. updates</div>
+  </div>
+
+  <div class="card">
+    <div class="stat-val" style="color:var(--cyan)">${METRIC_RUNNING_PROCS:-0}</div>
+    <div class="stat-label">Running processes</div>
+  </div>
+
+</div>
+
+<!-- ── Charts row ───────────────────────────────────────── -->
+<div class="grid grid-2">
+
+  <div class="card">
+    <h3>Resource usage</h3>
+    <div class="chart-wrap"><canvas id="resourceChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>File system risk breakdown</h3>
+    <div class="chart-wrap"><canvas id="fileRiskChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>Risk score — contributing factors</h3>
+    <div class="chart-wrap"><canvas id="riskRadar"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>Findings by severity</h3>
+    <div class="chart-wrap"><canvas id="severityChart"></canvas></div>
+  </div>
+
+</div>
+
+<!-- ── Security checklist ───────────────────────────────── -->
+<div class="grid grid-3">
+
+  <div class="card">
+    <h3>Access controls</h3>
+    <div class="check-row">
+      <span class="dot $([ "$METRIC_SSH_ROOT" != "yes" ] && echo 'dot-ok' || echo 'dot-bad')"></span>
+      <span class="check-name">SSH root login</span>
+      <span class="check-val">${METRIC_SSH_ROOT}</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_ROOT_USERS:-1}" -le 1 ] && echo 'dot-ok' || echo 'dot-bad')"></span>
+      <span class="check-name">UID-0 accounts</span>
+      <span class="check-val">${METRIC_ROOT_USERS:-1}</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_USERS_NO_PASS:-0}" -eq 0 ] && echo 'dot-ok' || echo 'dot-bad')"></span>
+      <span class="check-name">Empty passwords</span>
+      <span class="check-val">${METRIC_USERS_NO_PASS:-0} accounts</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_FAILED_LOGINS:-0}" -le 20 ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">Failed login attempts</span>
+      <span class="check-val">${METRIC_FAILED_LOGINS:-0}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Network &amp; firewall</h3>
+    <div class="check-row">
+      <span class="dot $([ "$METRIC_UFW_STATUS" = "active" ] && echo 'dot-ok' || echo 'dot-bad')"></span>
+      <span class="check-name">UFW firewall</span>
+      <span class="check-val">${METRIC_UFW_STATUS}</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_OPEN_PORTS:-0}" -le 10 ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">Open ports</span>
+      <span class="check-val">${METRIC_OPEN_PORTS:-0} listening</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_PENDING_UPDATES:-0}" -eq 0 ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">Security updates</span>
+      <span class="check-val">${METRIC_PENDING_UPDATES:-0} pending</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>MAC &amp; kernel hardening</h3>
+    <div class="check-row">
+      <span class="dot $([ "$METRIC_SELINUX" = "enabled" ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">SELinux</span>
+      <span class="check-val">${METRIC_SELINUX}</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "$METRIC_APPARMOR" = "loaded" ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">AppArmor</span>
+      <span class="check-val">${METRIC_APPARMOR}</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_SUID_FILES:-0}" -le 30 ] && echo 'dot-ok' || echo 'dot-warn')"></span>
+      <span class="check-name">SUID binaries</span>
+      <span class="check-val">${METRIC_SUID_FILES:-0} found</span>
+    </div>
+    <div class="check-row">
+      <span class="dot $([ "${METRIC_WORLD_WRITABLE:-0}" -eq 0 ] && echo 'dot-ok' || echo 'dot-bad')"></span>
+      <span class="check-name">World-writable files</span>
+      <span class="check-val">${METRIC_WORLD_WRITABLE:-0} found</span>
+    </div>
+  </div>
+
+</div>
+
+<footer>Generated by Linux Audit Tool v3.1 &mdash; $(date) &mdash; For internal use only</footer>
+
+<script>
+const C={green:'#22c55e',yellow:'#f59e0b',red:'#ef4444',blue:'#3b82f6',purple:'#a855f7',cyan:'#06b6d4',bg3:'#334155',text:'#94a3b8'};
+const defaults={responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:C.text,font:{size:11}}}}};
+
+// Resource usage doughnut
+new Chart(document.getElementById('resourceChart'),{
+  type:'doughnut',
+  data:{
+    labels:['CPU load (×10)','Mem used %','Disk used %','Idle'],
+    datasets:[{
+      data:[Math.min(parseFloat('${METRIC_CPU_LOAD:-0}')*10,100).toFixed(1), ${mem_pct}, ${METRIC_DISK_USAGE:-0}, Math.max(0,100-${mem_pct})],
+      backgroundColor:[C.purple,C.blue,C.cyan,C.bg3],
+      borderWidth:0,hoverOffset:4
+    }]
+  },
+  options:{...defaults,cutout:'65%'}
+});
+
+// File risk bar
+new Chart(document.getElementById('fileRiskChart'),{
+  type:'bar',
+  data:{
+    labels:['SUID files','World-writable','Empty-pwd users','Root accounts','Failed logins ÷10'],
+    datasets:[{
+      label:'Count',
+      data:[${METRIC_SUID_FILES:-0},${METRIC_WORLD_WRITABLE:-0},${METRIC_USERS_NO_PASS:-0},${METRIC_ROOT_USERS:-1},Math.round(${METRIC_FAILED_LOGINS:-0}/10)],
+      backgroundColor:[C.purple,C.red,C.red,C.yellow,C.yellow],
+      borderRadius:6,borderWidth:0
+    }]
+  },
+  options:{
+    ...defaults,
+    indexAxis:'y',
+    scales:{x:{ticks:{color:C.text},grid:{color:'#334155'}},y:{ticks:{color:C.text},grid:{display:false}}}
+  }
+});
+
+// Risk radar
+new Chart(document.getElementById('riskRadar'),{
+  type:'radar',
+  data:{
+    labels:['SSH','Firewall','Users','Files','MAC/SELinux','Updates'],
+    datasets:[{
+      label:'Risk level',
+      data:[
+        $( [ "$METRIC_SSH_ROOT" = "yes" ] && echo 100 || echo 5),
+        $( [ "$METRIC_UFW_STATUS" = "inactive" ] && echo 80 || echo 10),
+        $(echo "${METRIC_USERS_NO_PASS:-0} * 20 + ${METRIC_ROOT_USERS:-1} * 5" | bc 2>/dev/null || echo 10),
+        $(echo "${METRIC_WORLD_WRITABLE:-0} * 2 + ${METRIC_SUID_FILES:-0}" | bc 2>/dev/null | awk '{if($1>100)print 100;else print $1}'),
+        $( [ "$METRIC_SELINUX" != "enabled" ] && [ "$METRIC_APPARMOR" != "loaded" ] && echo 80 || echo 15),
+        $(echo "${METRIC_PENDING_UPDATES:-0} * 5" | bc 2>/dev/null | awk '{if($1>100)print 100;else print $1}')
+      ],
+      fill:true,
+      backgroundColor:'rgba(239,68,68,.15)',
+      borderColor:'#ef4444',
+      pointBackgroundColor:'#ef4444',
+      pointRadius:4
+    }]
+  },
+  options:{
+    ...defaults,
+    scales:{r:{ticks:{color:C.text,backdropColor:'transparent',stepSize:25},grid:{color:'#334155'},pointLabels:{color:C.text,font:{size:11}},min:0,max:100}}
+  }
+});
+
+// Severity pie
+const critCount = $( val=0; [ "$METRIC_SSH_ROOT" = "yes" ] && val=$((val+1)); [ "$METRIC_UFW_STATUS"="inactive" ] && val=$((val+1)); [ "${METRIC_USERS_NO_PASS:-0}" -gt 0 ] && val=$((val+1)); echo $val );
+const highCount = $( val=0; [ "${METRIC_WORLD_WRITABLE:-0}" -gt 0 ] && val=$((val+1)); [ "${METRIC_FAILED_LOGINS:-0}" -gt 50 ] && val=$((val+1)); echo $val );
+const medCount  = $( val=0; [ "${METRIC_SUID_FILES:-0}" -gt 30 ] && val=$((val+1)); [ "${METRIC_PENDING_UPDATES:-0}" -gt 0 ] && val=$((val+1)); echo $val );
+const lowCount  = Math.max(1, 8 - critCount - highCount - medCount);
+new Chart(document.getElementById('severityChart'),{
+  type:'doughnut',
+  data:{
+    labels:['Critical','High','Medium','Low / Info'],
+    datasets:[{
+      data:[critCount,highCount,medCount,lowCount],
+      backgroundColor:[C.red,C.yellow,C.purple,C.green],
+      borderWidth:0,hoverOffset:4
+    }]
+  },
+  options:{...defaults,cutout:'60%'}
+});
+</script>
+</body>
+</html>
+HTMLEOF
+    echo -e "${GREEN}[+] HTML dashboard saved: ${YELLOW}$html_file${NC}"
+}
+
 show_progress() {
     local current=$1 total=$2 description=$3
     local percent=$((current * 100 / total))
@@ -842,7 +1242,7 @@ show_progress() {
 }
 
 main() {
-    local total_sections=4 current_section=0
+    local total_sections=5 current_section=0
 
     banner
 
@@ -874,6 +1274,10 @@ main() {
     current_section=$((current_section + 1))
     show_progress $current_section $total_sections "Generating Security Summary"
     generate_security_summary
+
+    # ── Generate HTML dashboard ───────────────────────────────────────────────
+    echo -e "\n${BLUE}[*] Generating visual HTML dashboard...${NC}"
+    generate_html_dashboard "$OUTPUT_FILE_HTML"
 
     echo -e "\n${BLUE}[*] Saving report(s)...${NC}"
     case $OUTPUT_FORMAT in
@@ -910,9 +1314,10 @@ main() {
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo -e "${GREEN}[+] Results: ${YELLOW}$FINAL_FILE${NC}"
     echo -e "${GREEN}[+] Time   : ${YELLOW}$(($(date +%s) - SCRIPT_START_TIME))s${NC}"
-    for f in "$OUTPUT_FILE_TXT" "$OUTPUT_FILE_PDF"; do
+    for f in "$OUTPUT_FILE_TXT" "$OUTPUT_FILE_PDF" "$OUTPUT_FILE_HTML"; do
         [ -f "$f" ] && echo -e "${GREEN}[+] Size   : ${YELLOW}$(du -h "$f" | cut -f1) — $f${NC}"
     done
+    echo -e "${CYAN}[*] Open the .html file in a browser for an interactive security dashboard.${NC}"
     echo -e "${CYAN}[*] Review the report carefully and remediate findings.${NC}"
 }
 
@@ -951,6 +1356,7 @@ if [ -z "$OUTPUT_FILE_TXT" ]; then
     timestamp=$(date +%Y%m%d_%H%M%S)
     OUTPUT_FILE_TXT="Linux_security_audit_${timestamp}.txt"
     OUTPUT_FILE_PDF="Linux_security_audit_${timestamp}.pdf"
+    OUTPUT_FILE_HTML="Linux_security_audit_${timestamp}.html"
 fi
 
 main
